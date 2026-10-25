@@ -1,0 +1,330 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Shoreham Surf 3D</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;overflow:hidden;background:#9bd4e6;font-family:Arial,sans-serif;color:white}
+#view{position:fixed;inset:0}
+canvas{display:block;width:100%;height:100%;touch-action:none}
+#hud{position:fixed;top:10px;left:10px;right:10px;display:flex;flex-wrap:wrap;gap:7px;pointer-events:none}
+.panel{background:#092d40df;border:1px solid #b2e6e7;border-radius:10px;padding:8px 10px;font-size:12px;line-height:1.5;backdrop-filter:blur(5px)}
+strong{color:#b8f7d9}
+#controls{position:fixed;bottom:12px;left:12px;right:12px;display:flex;justify-content:space-between;align-items:end;gap:8px}
+button,select{background:#103c50;color:white;border:1px solid #a8e7e8;border-radius:12px;padding:12px;font-size:14px;font-weight:bold;touch-action:none}
+button:active{background:#267f91}
+.big{width:62px;height:60px;font-size:23px}
+#arrows{display:flex;gap:8px}
+#other{display:flex;flex-direction:column;gap:7px;align-items:end}
+#message{position:fixed;top:42%;width:100%;text-align:center;font-size:clamp(22px,5vw,40px);font-weight:900;text-shadow:0 3px 8px #123c53;pointer-events:none}
+#hint{position:fixed;bottom:14px;left:10px;right:10px;text-align:center;font-size:12px;font-weight:bold;line-height:1.5;text-shadow:0 2px 5px #00334b;pointer-events:none}
+.control-label{display:block;background:#092d40e8;border:1px solid #b2e6e7;border-radius:8px;padding:8px 12px;width:fit-content;max-width:100%;margin:0 auto 4px}
+#meter{width:125px;height:7px;background:#526a71;border-radius:8px;overflow:hidden}
+#fill{height:100%;width:0;background:#69ff9c}
+@media(max-width:600px){
+ .pc-controls{display:none}
+ #hint{bottom:91px;font-size:11px}
+}
+@media(min-width:601px){
+ .mobile-controls{display:none}
+ #controls{opacity:.83}
+}
+</style>
+</head>
+<body>
+<div id="view"></div>
+<div id="hud">
+ <div class="panel"><strong>SHOREHAM SURF 3D</strong><br><span id="status">Paddle out to catch a wave</span></div>
+ <div class="panel">SCORE<br><strong id="score">0</strong></div>
+ <div class="panel">SPEED<br><strong id="speed">0 km/h</strong></div>
+ <div class="panel">BALANCE<br><strong id="balance">100%</strong></div>
+ <div class="panel">TAKE-OFF<div id="meter"><div id="fill"></div></div></div>
+ <div class="panel" id="weather">SHOREHAM FORECAST<br><strong>Loading…</strong></div>
+</div>
+<div id="message">PADDLE OUT</div>
+
+<div id="hint">
+ <span class="control-label pc-controls">PC CONTROLS: W / ↑ PADDLE &nbsp; · &nbsp; A / ← LEFT &nbsp; · &nbsp; D / → RIGHT &nbsp; · &nbsp; R NEW WAVE</span>
+ <span class="control-label mobile-controls">PHONE CONTROLS: Use the buttons below to paddle and steer.</span>
+</div>
+
+<div id="controls">
+ <div id="arrows"><button class="big" id="left">◀</button><button class="big" id="right">▶</button></div>
+ <button id="paddle">PADDLE</button>
+ <div id="other">
+  <select id="board"><option value="0">Longboard</option><option value="1">Fish</option><option value="2">Shortboard</option><option value="3">Gun</option></select>
+  <button id="restart">NEW WAVE ↻</button>
+ </div>
+</div>
+
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+const mount=document.querySelector('#view');
+const scene=new THREE.Scene();
+scene.background=new THREE.Color('#9bd5e9');
+scene.fog=new THREE.Fog('#a9dce6',45,145);
+const camera=new THREE.PerspectiveCamera(54,innerWidth/innerHeight,.1,300);
+camera.position.set(0,7.5,15);
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth,innerHeight);
+renderer.outputColorSpace=THREE.SRGBColorSpace;
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure=1.15;
+mount.appendChild(renderer.domElement);
+scene.add(new THREE.HemisphereLight(0xe2f9ff,0x567c70,2.1));
+const sun=new THREE.DirectionalLight(0xfff0d4,2.5);
+sun.position.set(-15,25,12);sun.castShadow=true;scene.add(sun);
+
+const mat=(c,r=.8,m=0)=>new THREE.MeshStandardMaterial({color:c,roughness:r,metalness:m});
+const grass=mat('#71957b'),hillMat=mat('#91aa88'),sand=mat('#c9b996'),concrete=mat('#8c9894');
+const roofMat=mat('#9c7770'),whiteMat=mat('#e6e2d4');
+const boardMats=['#e9d5a4','#f2a56e','#eaf1f0','#a6cbe9'].map(c=>mat(c,.32));
+const skin=mat('#d8a17c'),wetsuit=mat('#d94e40'),dark=mat('#243b46');
+const seaMat=new THREE.MeshStandardMaterial({color:'#16899e',roughness:.3,metalness:.08,side:THREE.DoubleSide});
+const foamMat=new THREE.MeshStandardMaterial({color:'#ecfff6',roughness:.55,transparent:true,opacity:.75});
+
+function box(parent,name,x,y,z,sx,sy,sz,material){
+ const m=new THREE.Mesh(new THREE.BoxGeometry(sx,sy,sz),material);
+ m.name=name;m.position.set(x,y,z);m.castShadow=true;m.receiveShadow=true;parent.add(m);return m;
+}
+function hill(x,z,sx,sy,sz){
+ const m=new THREE.Mesh(new THREE.SphereGeometry(1,24,12),hillMat);
+ m.position.set(x,sy*.15,z);m.scale.set(sx,sy,sz);scene.add(m);
+}
+function house(x,z,s=1,color='#eee4d1'){
+ const q=new THREE.Group();scene.add(q);
+ box(q,'house',0,.6,0,1.6*s,1.2*s,1.3*s,mat(color));
+ const r=new THREE.Mesh(new THREE.ConeGeometry(1.2*s,.65*s,4),roofMat);
+ r.rotation.y=Math.PI/4;r.position.set(0,1.48*s,0);q.add(r);
+ q.position.set(x,0,z);
+ box(q,'door',.15,.35,.66*s,.25*s,.7*s,.035*s,dark);
+ for(let i=0;i<2;i++)box(q,'window',(-.45+i*.8)*s,.75*s,.67*s,.24*s,.28*s,.035*s,mat('#a9d7dc'));
+}
+for(let i=0;i<11;i++)hill(-78+i*15,-52,13+Math.sin(i*3)*3,5+Math.sin(i*1.8)*2,13);
+const land=new THREE.Mesh(new THREE.PlaneGeometry(220,48),grass);
+land.rotation.x=-Math.PI/2;land.position.set(0,-.45,-40);scene.add(land);
+const beach=new THREE.Mesh(new THREE.PlaneGeometry(220,16),sand);
+beach.rotation.x=-Math.PI/2;beach.position.set(0,-.25,-18);scene.add(beach);
+for(let i=0;i<34;i++)house(-39+i*2.4,-27-Math.sin(i*1.8)*1.4,.5+(i%4)*.11,['#e6ddc9','#d8c6b2','#eee9db','#d4ddd5'][i%4]);
+for(const side of [-1,1]){
+ box(scene,'harbour breakwater',side*13,-.05,-16,1.1,.75,22,concrete);
+ for(let i=0;i<18;i++)box(scene,'breakwater block',side*13,-.02,-26+i*1.15,.9,.25,.9,mat(i%2?'#89938e':'#a1a7a0'));
+}
+box(scene,'Shoreham Fort',-21,.25,-17,3.8,1.1,3.2,mat('#c4b69c'));
+const roof=new THREE.Mesh(new THREE.CylinderGeometry(1.9,2.3,.5,16),concrete);
+roof.position.set(-21,.98,-17);scene.add(roof);
+for(let i=0;i<4;i++)box(scene,'fort embrasure',-22.1+i*.72,.45,-15.37,.12,.3,.04,dark);
+const river=new THREE.Mesh(new THREE.PlaneGeometry(8,33),mat('#508f9a',.3));
+river.rotation.x=-Math.PI/2;river.position.set(-22,-.22,-30);scene.add(river);
+for(let i=0;i<10;i++)box(scene,'river bank',-26,-.1,-42+i*2.5,.65,.45,2.4,grass);
+
+// Dynamic 3D ocean
+const NX=170,NZ=125,WX=78,WZ=76;
+const geo=new THREE.PlaneGeometry(WX,WZ,NX,NZ);geo.rotateX(-Math.PI/2);
+const pos=geo.attributes.position;
+const water=new THREE.Mesh(geo,seaMat);
+water.position.set(0,-.2,5);scene.add(water);
+const foamGroup=new THREE.Group();scene.add(foamGroup);
+const foamBits=[];
+for(let i=0;i<115;i++){
+ const m=new THREE.Mesh(new THREE.SphereGeometry(.1+Math.random()*.12,6,5),foamMat);
+ foamGroup.add(m);foamBits.push(m);
+}
+
+const rider=new THREE.Group();scene.add(rider);
+const boardGroup=new THREE.Group();rider.add(boardGroup);
+const shape=new THREE.Shape();
+shape.moveTo(-1.45,0);shape.quadraticCurveTo(-1.25,.17,0,.14);
+shape.quadraticCurveTo(1.25,.17,1.45,0);shape.quadraticCurveTo(1.15,-.14,0,-.13);
+shape.quadraticCurveTo(-1.15,-.14,-1.45,0);
+const boardGeo=new THREE.ExtrudeGeometry(shape,{depth:.075,bevelEnabled:true,bevelSegments:2,steps:1,bevelSize:.035,bevelThickness:.025});
+boardGeo.rotateX(-Math.PI/2);
+let boardMesh=new THREE.Mesh(boardGeo,boardMats[0]);boardMesh.castShadow=true;boardGroup.add(boardMesh);
+const stripe=box(boardGroup,'board stringer',0,.09,0,2.1,.012,.035,whiteMat);
+
+const body=new THREE.Group();rider.add(body);
+const torso=new THREE.Mesh(new THREE.CapsuleGeometry(.19,.42,4,8),wetsuit);
+torso.position.set(0,.52,0);torso.rotation.z=-.2;body.add(torso);
+const head=new THREE.Mesh(new THREE.SphereGeometry(.14,12,10),skin);
+head.position.set(.04,.87,-.02);body.add(head);
+const hair=new THREE.Mesh(new THREE.SphereGeometry(.145,12,8,0,Math.PI*2,0,Math.PI*.55),dark);
+hair.position.copy(head.position).add(new THREE.Vector3(0,.035,0));body.add(hair);
+let limbs=[];
+function limb(a,b,r=.065,material=skin){
+ const d=new THREE.Vector3().subVectors(b,a);
+ const m=new THREE.Mesh(new THREE.CylinderGeometry(r*.72,r,d.length(),8),material);
+ m.position.copy(a).add(b).multiplyScalar(.5);
+ m.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),d.clone().normalize());
+ body.add(m);limbs.push(m);
+}
+function rebuildLimbs(){
+ limbs.forEach(m=>body.remove(m));limbs=[];
+ if(mode==='paddle'){
+  limb(new THREE.Vector3(-.1,.52,0),new THREE.Vector3(-.48,.22,.3),.055);
+  limb(new THREE.Vector3(.1,.52,0),new THREE.Vector3(.48,.22,.3),.055);
+  limb(new THREE.Vector3(-.08,.34,-.05),new THREE.Vector3(-.28,.14,-.45),.07,wetsuit);
+  limb(new THREE.Vector3(.08,.34,-.05),new THREE.Vector3(.28,.14,-.45),.07,wetsuit);
+ }else{
+  limb(new THREE.Vector3(-.12,.53,0),new THREE.Vector3(-.42,.68,-.12),.055);
+  limb(new THREE.Vector3(.12,.53,0),new THREE.Vector3(.43,.6,.12),.055);
+  limb(new THREE.Vector3(-.08,.33,0),new THREE.Vector3(-.48,.12,-.34),.07,wetsuit);
+  limb(new THREE.Vector3(.08,.33,0),new THREE.Vector3(.42,.12,.36),.07,wetsuit);
+ }
+}
+let mode='paddle',x=0,boardZ=2.4,velocity=0,sideVelocity=0,balance=100,points=0;
+let steer=0,paddling=false,clock=0,last=performance.now();
+rebuildLimbs();
+const boards=[
+ {len:1.12,turn:.68,stable:1.55},
+ {len:.94,turn:1.05,stable:1.12},
+ {len:.82,turn:1.42,stable:.83},
+ {len:1.1,turn:.87,stable:1.18}
+];
+function setBoard(i){
+ boardGroup.remove(boardMesh);
+ boardMesh=new THREE.Mesh(boardGeo,boardMats[i]);
+ boardMesh.scale.set(boards[i].len,1,1);boardMesh.castShadow=true;boardGroup.add(boardMesh);
+ boardGroup.add(stripe);
+}
+$('board').addEventListener('change',e=>setBoard(+e.target.value));
+function waveHeight(x,z,t){
+ const crest=-1+Math.sin(t*.38)*2.2,d=z-crest;
+ const main=1.25*Math.exp(-d*d/17);
+ const shoulder=.27*Math.sin(d*.35-t*.14)*Math.exp(-d*d/115);
+ const along=.88+.12*Math.cos(x*.12+t*.28);
+ return (main+shoulder+.1*Math.sin(x*.23-t*.3)*Math.exp(-d*d/55))*along;
+}
+function waveSlope(x,z,t){
+ const e=.15;
+ return {dx:(waveHeight(x+e,z,t)-waveHeight(x-e,z,t))/(2*e),dz:(waveHeight(x,z+e,t)-waveHeight(x,z-e,t))/(2*e)};
+}
+function changeMode(m){
+ if(mode===m)return;mode=m;rebuildLimbs();
+ if(m==='ride'){
+  $('message').textContent='POP UP!';$('status').textContent='Ride the face and control your line';
+  setTimeout(()=>{if(mode==='ride')$('message').textContent='RIDE THE WAVE'},700);
+ }
+ if(m==='wipeout'){
+  $('message').textContent='WIPEOUT!';$('status').textContent='Paddle out for another wave';
+  setTimeout(()=>{if(mode==='wipeout'){mode='paddle';x=0;boardZ=2.4;velocity=0;sideVelocity=0;balance=100;rebuildLimbs();$('message').textContent='PADDLE OUT'}},1400);
+ }
+}
+function reset(){
+ x=0;boardZ=2.4;velocity=0;sideVelocity=0;balance=100;points=0;
+ changeMode('paddle');$('message').textContent='PADDLE OUT';$('fill').style.width='0%';
+}
+$('restart').onclick=reset;
+function hold(id,down,up){
+ const b=$(id);
+ b.addEventListener('pointerdown',e=>{e.preventDefault();b.setPointerCapture(e.pointerId);down()});
+ b.addEventListener('pointerup',e=>{e.preventDefault();up()});
+ b.addEventListener('pointercancel',up);b.addEventListener('lostpointercapture',up);
+}
+hold('left',()=>steer=-1,()=>{if(steer===-1)steer=0});
+hold('right',()=>steer=1,()=>{if(steer===1)steer=0});
+hold('paddle',()=>paddling=true,()=>paddling=false);
+
+// PC controls: W/up paddle, A/left and D/right steer, R resets.
+addEventListener('keydown',e=>{
+ const k=e.key.toLowerCase();
+ if(['arrowleft','arrowright','arrowup',' '].includes(k))e.preventDefault();
+ if(k==='arrowleft'||k==='a')steer=-1;
+ if(k==='arrowright'||k==='d')steer=1;
+ if(k==='arrowup'||k==='w'||e.code==='Space')paddling=true;
+ if(k==='r'&&!e.repeat)reset();
+},{passive:false});
+addEventListener('keyup',e=>{
+ const k=e.key.toLowerCase();
+ if(['arrowleft','arrowright','a','d'].includes(k))steer=0;
+ if(['arrowup','w',' '].includes(k)||e.code==='Space')paddling=false;
+});
+function updateWater(){
+ const a=geo.attributes.position;
+ for(let i=0;i<a.count;i++){
+  const px=a.getX(i),pz=a.getZ(i);
+  a.setY(i,waveHeight(px,pz+water.position.z,clock));
+ }
+ a.needsUpdate=true;geo.computeVertexNormals();
+ for(let i=0;i<foamBits.length;i++){
+  const u=(i/foamBits.length-.5)*42;
+  const crest=-1+Math.sin(clock*.38)*2.2,z=crest+Math.sin(i*12.989)*1.4;
+  const f=foamBits[i];
+  f.position.set(u,waveHeight(u,z,clock)+.04,z-water.position.z);
+  f.scale.set(1.1,.25,.6);f.visible=Math.sin(i*5.1+clock*1.7)>-.45;
+ }
+}
+function update(dt){
+ clock+=dt;
+ const b=boards[+$('board').value];
+ const zz=boardZ+water.position.z;
+ const h=waveHeight(x,zz,clock),sl=waveSlope(x,zz,clock);
+ const crest=-1+Math.sin(clock*.38)*2.2;
+ const face=Math.exp(-Math.pow((zz-crest)/4.5,2));
+ if(mode==='paddle'){
+  velocity=THREE.MathUtils.clamp(velocity+(paddling?dt*.48:-dt*.15),0,1.25);
+  sideVelocity+=steer*dt*1.7;sideVelocity*=Math.pow(.08,dt);
+  x+=sideVelocity*dt;x=THREE.MathUtils.clamp(x,-21,21);
+  boardZ=THREE.MathUtils.clamp(boardZ-velocity*dt*.9,-1,7);
+  const timing=Math.max(0,Math.min(1,velocity*.48+face*.45));
+  $('fill').style.width=timing*100+'%';
+  if(velocity>.68&&face>.78&&boardZ<1.5){changeMode('ride');balance=100}
+ }else if(mode==='ride'){
+  velocity=THREE.MathUtils.clamp(velocity+dt*(.14+Math.max(0,-sl.dz)*.19-Math.abs(steer)*.035),.25,2.6);
+  sideVelocity+=(steer*b.turn*velocity*.85-sideVelocity)*Math.min(1,dt*2.5);
+  x+=sideVelocity*dt;x=THREE.MathUtils.clamp(x,-21,21);
+  const targetZ=crest+2.5;boardZ+=(targetZ-boardZ)*dt*.65;
+  balance-=dt*(Math.abs(steer)*3.2+Math.abs(sl.dx)*1.5)/b.stable;
+  if(paddling)balance=Math.min(100,balance+dt*1.5);
+  points+=Math.round((velocity*9+Math.abs(sideVelocity)*2)*dt);
+  $('fill').style.width=Math.max(0,balance)+'%';
+  if(balance<=0||Math.abs(x)>20.5)changeMode('wipeout');
+ }
+ $('score').textContent=points;
+ $('speed').textContent=Math.round(velocity*24)+' km/h';
+ $('balance').textContent=Math.round(balance)+'%';
+ if(mode==='paddle')$('status').textContent=paddling?'Paddling for speed…':'Paddle out to catch a wave';
+ if(mode==='ride'&&balance<30)$('message').textContent='KEEP BALANCED!';
+ const surfY=waveHeight(x,zz,clock);
+ rider.position.set(x,surfY+.12,boardZ);
+ boardGroup.rotation.z=THREE.MathUtils.lerp(boardGroup.rotation.z,-steer*.18,dt*3);
+ boardGroup.rotation.x=THREE.MathUtils.lerp(boardGroup.rotation.x,Math.atan(sl.dz)*.45,dt*3);
+ boardGroup.rotation.y=THREE.MathUtils.lerp(boardGroup.rotation.y,-Math.atan(sl.dx)*.25,dt*3);
+ body.rotation.z=THREE.MathUtils.lerp(body.rotation.z,-steer*.13,dt*3);
+ updateWater();
+ camera.position.lerp(new THREE.Vector3(x*.35,7.3,boardZ+13.8),1-Math.exp(-dt*1.5));
+ camera.lookAt(x*.25,1.3,boardZ-8.5);
+}
+function animate(now){
+ const dt=Math.min(.033,(now-last)/1000||0);last=now;
+ update(dt);renderer.render(scene,camera);requestAnimationFrame(animate);
+}
+requestAnimationFrame(animate);
+addEventListener('resize',()=>{
+ camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);
+});
+async function forecast(){
+ try{
+  const lat=50.8338,lon=-.2732;
+  const urls=[
+   `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,wind_speed_10m&timezone=Europe%2FLondon`,
+   `https://marine-api.open-meteo.com/v1/marine?latitude=${lat}&longitude=${lon}&current=wave_height,wave_period&timezone=Europe%2FLondon`
+  ];
+  const [a,b]=await Promise.all(urls.map(u=>fetch(u)));
+  if(!a.ok||!b.ok)throw Error();
+  const w=(await a.json()).current,m=(await b.json()).current;
+  $('weather').innerHTML=`SHOREHAM CONDITIONS<br><strong>${Math.round(w.temperature_2m)}°C · Wind ${Math.round(w.wind_speed_10m)} km/h</strong><br>Waves ${m.wave_height==null?'—':m.wave_height.toFixed(1)+' m'} · Period ${m.wave_period==null?'—':m.wave_period.toFixed(0)+' s'}`;
+ }catch(e){$('weather').innerHTML='SHOREHAM CONDITIONS<br><strong>Forecast unavailable</strong>'}
+}
+forecast();setInterval(forecast,600000);
+})();
+</script>
+</body>
+</html>
